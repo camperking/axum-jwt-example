@@ -7,6 +7,7 @@ edition = "2021"
 
 [dependencies]
 axum = {version = "0.6.1", features = ["headers"]}
-jwt-simple = "0.11.2"
+jsonwebtoken = "8.2.0"
+rand = "0.8.5"
 serde = "1.0.152"
 tokio = {version = "1.24.1", features = ["full"]}

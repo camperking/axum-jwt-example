@@ -1,4 +1,5 @@
-use std::{collections::HashMap, sync::Arc};
+use rand::Rng;
+use std::{sync::Arc, time::SystemTime};
 
 use axum::{
     extract::State,
@@ -7,71 +8,61 @@ use axum::{
     middleware::{self, Next},
     response::Response,
     routing::{get, post},
-    Json, Router, TypedHeader,
+    Router, TypedHeader,
 };
-use jwt_simple::prelude::*;
+use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Deserialize)]
-struct User {
-    name: String,
-    _password: String,
+#[derive(Debug, Serialize, Deserialize)]
+struct Claims {
+    sub: String,
+    exp: u64,
 }
 
 struct AppState {
-    jwt_key: HS256Key,
+    jwt_enc_key: EncodingKey,
+    jwt_dec_key: DecodingKey,
 }
 
 #[tokio::main]
 async fn main() {
-    let mut users: HashMap<&str, &str> = HashMap::new();
-    users.insert("user1", "password");
-
-    let users = Arc::from(users);
+    let mut arr = [0u8; 32];
+    rand::thread_rng().try_fill(&mut arr[..]).unwrap();
 
     let app_state = Arc::new(AppState {
-        jwt_key: HS256Key::generate(),
+        jwt_enc_key: EncodingKey::from_secret(&arr),
+        jwt_dec_key: DecodingKey::from_secret(&arr),
     });
 
     // auth and receive jwt
     let app = Router::new()
         .route(
             "/auth",
-            post(
-                |state: State<Arc<AppState>>, Json(payload): Json<User>| async move {
-                    println!("Payload: {:#?}", payload);
-                    println!("Users: {:#?}", users);
-                    let user = users.iter().find(|&user| *user.0 == payload.name);
+            post(|state: State<Arc<AppState>>| async move {
+                let claims = Claims {
+                    sub: "user".to_string(),
+                    exp: SystemTime::now()
+                        .duration_since(SystemTime::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs()
+                        + 3600,
+                };
 
-                    let user = match user {
-                        Some(user) => user,
-                        None => return Err(StatusCode::NOT_FOUND),
-                    };
+                let token = encode(&Header::default(), &claims, &state.jwt_enc_key).unwrap();
 
-                    let claims = Claims::create(Duration::from_hours(2));
-                    let token = state.jwt_key.authenticate(claims).unwrap();
-
-                    println!("user found: {:#?}", user);
-                    Ok(token)
-                },
-            ),
+                token
+            }),
         )
         .route(
             "/verify",
             post(|state: State<Arc<AppState>>, body: String| async move {
-                println!("Body: {:#?}", body);
+                let token =
+                    decode::<Claims>(&body, &state.jwt_dec_key, &Validation::default()).unwrap();
 
-                let claims = state.jwt_key.verify_token::<NoCustomClaims>(&body, None);
-                let claims = match claims {
-                    Ok(c) => c,
-                    Err(err) => {
-                        println!("jwt error: {:#?}", err);
-                        return Err(StatusCode::UNAUTHORIZED);
-                    }
-                };
-
-                println!("Claims: {:#?}", claims);
-
-                Ok("ok")
+                format!(
+                    "token for {:?} expires at {:?}",
+                    token.claims.sub, token.claims.exp
+                )
             }),
         )
         .route(
@@ -99,15 +90,8 @@ async fn jwt_middleware<B>(
     req: Request<B>,
     next: Next<B>,
 ) -> Result<Response, StatusCode> {
-    let claims = state
-        .jwt_key
-        .verify_token::<NoCustomClaims>(auth.token(), None);
-    let claims = match claims {
-        Ok(c) => c,
-        Err(_) => return Err(StatusCode::UNAUTHORIZED),
-    };
-
-    println!("Claims: {:#?}", claims);
+    let _token =
+        decode::<Claims>(&auth.token(), &state.jwt_dec_key, &Validation::default()).unwrap();
 
     let response = next.run(req).await;
 
